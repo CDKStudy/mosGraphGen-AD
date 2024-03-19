@@ -14,32 +14,31 @@ from torch_geometric.nn import MessagePassing
 from torch_geometric.utils import add_self_loops, degree, softmax
 from torch_geometric.nn.inits import glorot, zeros,kaiming_uniform
 
+from torch_geometric.nn import aggr
+
 class WeBConv(MessagePassing):
-    def __init__(self, in_channels, out_channels, node_num, num_edge, num_gene_edge, device):
+    def __init__(self, in_channels, out_channels, node_num, num_edge, device):
         super(WeBConv, self).__init__(aggr='add')
         self.node_num = node_num
         self.num_edge = num_edge
-        self.num_gene_edge = num_gene_edge
-        self.num_drug_edge = num_edge - num_gene_edge
 
         self.up_proj = torch.nn.Linear(in_channels, out_channels, bias=False)
         self.down_proj = torch.nn.Linear(in_channels, out_channels, bias=False)
         self.bias_proj = torch.nn.Linear(in_channels, out_channels, bias=False)
 
-        ##### [edge_weight] FOR ALL EDGES IN ONE [(gene+drug)] GRAPH #####
+        ##### [edge_weight] FOR ALL EDGES IN ONE [(gene)] GRAPH #####
         ### [up_gene_edge_weight] [num_gene_edge / 21729] ###
         up_std_gene_edge = torch.nn.init.calculate_gain('relu')
-        self.up_gene_edge_weight = torch.nn.Parameter((torch.randn(self.num_gene_edge) * up_std_gene_edge).to(device))
+        self.up_gene_edge_weight = torch.nn.Parameter((torch.randn(self.num_edge) * up_std_gene_edge).to(device))
         ### [down_gene_edge_weight] [num_gene_edge / 21729] ###
         down_std_gene_edge = torch.nn.init.calculate_gain('relu')
-        self.down_gene_edge_weight = torch.nn.Parameter((torch.randn(self.num_gene_edge) * down_std_gene_edge).to(device))
+        self.down_gene_edge_weight = torch.nn.Parameter((torch.randn(self.num_edge) * down_std_gene_edge).to(device))
 
 
     def forward(self, x, edge_index):
         # [batch_size]
         batch_size = int(x.shape[0] / self.node_num)
         # TEST PARAMETERS
-        # import pdb; pdb.set_trace()
         print(torch.sum(self.up_gene_edge_weight))
         print(torch.sum(self.down_gene_edge_weight))
 
@@ -51,12 +50,8 @@ class WeBConv(MessagePassing):
         bias_x = self.bias_proj(x)
 
         ### [edge_weight] ###
-        # [up_edge_weight] = [up_gene_edge_weight] + [up_drug_edge_weight] [21729+116=21845]
-        up_drug_edge_weight = torch.ones(self.num_drug_edge).to(device='cuda') # [/58*2=116]
-        up_edge_weight = torch.cat((self.up_gene_edge_weight, up_drug_edge_weight), 0)
-        # [down_edge_weight] = [down_gene_edge_weight] + [down_drug_edge_weight] [21729+116=21845]
-        down_drug_edge_weight = torch.ones(self.num_drug_edge).to(device='cuda')
-        down_edge_weight = torch.cat((self.down_gene_edge_weight, down_drug_edge_weight), 0) # [/58*2=116]
+        up_edge_weight =self.up_gene_edge_weight
+        down_edge_weight = self.down_gene_edge_weight
         # [batch_up/down_edge_weight] [N*21845]
         batch_up_edge_weight = up_edge_weight.repeat(1, batch_size)
         batch_down_edge_weight = down_edge_weight.repeat(1, batch_size)
@@ -167,11 +162,10 @@ class TraverseSubGNN(nn.Module):
 
 class GlobalWeBGNN(nn.Module):
     def __init__(self, input_dim, hidden_dim, embedding_dim,
-                            node_num, num_edge, num_gene_edge, device):
+                            node_num, num_edge, device):
         super(GlobalWeBGNN, self).__init__()
         self.node_num = node_num
         self.num_edge = num_edge
-        self.num_gene_edge = num_gene_edge
 
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
@@ -179,22 +173,22 @@ class GlobalWeBGNN(nn.Module):
 
         self.device = device
         self.webconv_first, self.webconv_block, self.webconv_last = self.build_webconv_layer(
-                    input_dim, hidden_dim, embedding_dim, node_num, num_edge, num_gene_edge)
+                    input_dim, hidden_dim, embedding_dim, node_num, num_edge)
         
         self.act = nn.ReLU()
         self.act2 = nn.LeakyReLU(negative_slope=0.1)
 
 
-    def build_webconv_layer(self, input_dim, hidden_dim, embedding_dim, node_num, num_edge, num_gene_edge):
+    def build_webconv_layer(self, input_dim, hidden_dim, embedding_dim, node_num, num_edge):
         # webconv_first [input_dim, hidden_dim]
         webconv_first = WeBConv(in_channels=input_dim, out_channels=hidden_dim,
-                node_num=node_num, num_edge=num_edge, num_gene_edge=num_gene_edge, device=self.device)
+                node_num=node_num, num_edge=num_edge, device=self.device)
         # webconv_block [hidden_dim*3, hidden_dim]
         webconv_block = WeBConv(in_channels=int(hidden_dim*3), out_channels=hidden_dim,
-                node_num=node_num, num_edge=num_edge, num_gene_edge=num_gene_edge, device=self.device)
+                node_num=node_num, num_edge=num_edge, device=self.device)
         # webconv_last [hidden_dim*3, embedding_dim]
         webconv_last = WeBConv(in_channels=int(hidden_dim*3), out_channels=embedding_dim,
-                node_num=node_num, num_edge=num_edge, num_gene_edge=num_gene_edge, device=self.device)
+                node_num=node_num, num_edge=num_edge, device=self.device)
         return webconv_first, webconv_block, webconv_last
 
     def forward(self, x, edge_index):
@@ -214,18 +208,17 @@ class GlobalWeBGNN(nn.Module):
 
 
 class TSGNNDecoder(nn.Module):
-    def __init__(self, input_dim, hidden_dim, embedding_dim, decoder_dim,
-                                num_gene, node_num, num_edge, num_gene_edge, device):
+    def __init__(self, input_dim, hidden_dim, embedding_dim, decoder_dim, node_num, num_edge, device, num_class):
         super(TSGNNDecoder, self).__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.embedding_dim = embedding_dim
         self.device = device
 
-        self.num_gene = num_gene
         self.node_num = node_num
         self.num_edge = num_edge
-        self.num_gene_edge = num_gene_edge
+
+        self.num_class = num_class
 
         self.max_layer = 3
         self.traverse_subgnn = TraverseSubGNN(input_dim=input_dim, embedding_dim=input_dim*3, head=3, max_layer=self.max_layer, device=device)
@@ -234,28 +227,32 @@ class TSGNNDecoder(nn.Module):
         
         self.x_norm = nn.BatchNorm1d(input_dim)
 
-
         ##### GLOBAL PROPAGATION LAYERS
         self.global_gnn = GlobalWeBGNN(input_dim=input_dim+1, hidden_dim=hidden_dim, embedding_dim=embedding_dim,
-                                node_num=node_num, num_edge=num_edge, num_gene_edge=num_gene_edge, device=device)
+                                node_num=node_num, num_edge=num_edge, device=device)
 
-        self.parameter1 = torch.nn.Parameter(torch.randn(int(embedding_dim*3), decoder_dim).to(device='cuda'))
-        self.parameter2 = torch.nn.Parameter(torch.randn(decoder_dim, decoder_dim).to(device='cuda'))
+        # Simple aggregations
+        self.mean_aggr = aggr.MeanAggregation()
+        self.max_aggr = aggr.MaxAggregation()
+        # Learnable aggregations
+        self.softmax_aggr = aggr.SoftmaxAggregation(learn=True)
+        self.powermean_aggr = aggr.PowerMeanAggregation(learn=True)
+
+        self.graph_prediction = torch.nn.Linear(embedding_dim * 3, num_class)
 
     
-    def forward(self, x, edge_index, drug_index, adj, edge_feat, edge_adj_index, dataset):
+    def forward(self, x, edge_index, graph_output_folder):
         ### BUILD UP ASSIGNMENT MATRIX
         # import pdb; pdb.set_trace()
 
         x_norm = self.x_norm(x)
         x = x.reshape(-1, self.node_num, self.input_dim)
         x_norm = x_norm.reshape(-1, self.node_num, self.input_dim)
-        gene_x = x[:, :self.num_gene, :]
         
         ### TRAVERSE SUBGRAPH
         # FORM NOTATION TO [signaling pathways]
-        form_data_path = './' + dataset + '/form_data'
-        kegg_path_gene_interaction_df = pd.read_csv('./' + dataset + '/filtered_data/kegg_path_gene_interaction.csv')
+        form_data_path = './' + graph_output_folder + '/form_data'
+        kegg_path_gene_interaction_df = pd.read_csv('./' + graph_output_folder + '/merged-gene-edge-name-all.csv')
         kegg_sp_list = list(set(kegg_path_gene_interaction_df['path']))
         kegg_sp_list.sort()
         kegg_sp_notation_list = ['sp' + str(x) for x in range(1, len(kegg_sp_list)+1)]
@@ -273,7 +270,7 @@ class TSGNNDecoder(nn.Module):
             subassign_index = np.load(form_data_path + '/' + sp_notation + '_gene_idx.npy')
             subgraph_size = subassign_index.shape[0]
             # EXPAND NODE TO MULTIPLE HOPs
-            subx = gene_x[:, subassign_index, :]
+            subx = x[:, subassign_index, :]
             batch_subx = torch.tile(subx, (1, self.max_layer, 1))
             batch_subx = batch_subx.reshape(-1, subx.shape[2])
             # GET [sp_adj_edgeindex, sp_mask_edgeindex]
@@ -320,34 +317,29 @@ class TSGNNDecoder(nn.Module):
         global_x = global_x.reshape(-1, global_x.shape[2])
         global_x, global_mean_up_edge_weight, global_mean_down_edge_weight = self.global_gnn(global_x, edge_index)
         final_x = global_x
+
         # import pdb; pdb.set_trace()
-
-        drug_index = torch.reshape(drug_index, (-1, 2))
-
-        # EMBEDDING DECODER TO [ypred]
-        batch_size, drug_num = drug_index.shape
-        ypred = torch.zeros(batch_size, 1).to(device='cuda')
-        for i in range(batch_size):
-            drug_a_idx = int(drug_index[i, 0]) - 1
-            drug_b_idx = int(drug_index[i, 1]) - 1
-            drug_a_embedding = final_x[drug_a_idx]
-            drug_b_embedding = final_x[drug_b_idx]
-            product1 = torch.matmul(drug_a_embedding, self.parameter1)
-            product2 = torch.matmul(product1, self.parameter2)
-            product3 = torch.matmul(product2, torch.transpose(self.parameter1, 0, 1))
-            output = torch.matmul(product3, drug_b_embedding.reshape(-1, 1))
-            ypred[i] = output
-        print(self.parameter1)
-        print(torch.sum(self.parameter1))
-        # print(self.parameter2)
-        return ypred
+        # Embedding decoder to [ypred]
+        x = final_x.view(-1, self.node_num, self.embedding_dim * 3)
+        x = self.powermean_aggr(x).view(-1, self.embedding_dim * 3)
+        output = self.graph_prediction(x)
+        _, ypred = torch.max(output, dim=1)
+        return output, ypred
 
 
-    def loss(self, pred, label):
+    def loss(self, output, label):
         # import pdb; pdb.set_trace()
-        pred = pred.to(device='cuda')
-        label = label.to(device='cuda')
-        loss = F.mse_loss(pred.squeeze(), label)
-        # print(pred)
-        # print(label)
+        num_class = self.num_class
+        # Use weight vector to balance the loss
+        weight_vector = torch.zeros([num_class]).to(device='cuda')
+        label = label.long()
+        for i in range(num_class):
+            n_samplei = torch.sum(label == i)
+            if n_samplei == 0:
+                weight_vector[i] = 0
+            else:
+                weight_vector[i] = len(label) / (n_samplei)
+        # Calculate the loss
+        output = torch.log_softmax(output, dim=-1)
+        loss = F.nll_loss(output, label, weight_vector)
         return loss

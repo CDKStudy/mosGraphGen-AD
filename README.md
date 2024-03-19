@@ -1,4 +1,4 @@
-# mosGraphGen
+# mosGraphGen-AD
 
 ## 1. UCSC Dataset Processing
 * Parse the data from the UCSC Xena website in PANCAN cohort:

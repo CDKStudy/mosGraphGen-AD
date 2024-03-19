@@ -390,13 +390,141 @@ class ROSMAP_LoadData():
         edge_index = torch.tensor([source_nodes, target_nodes], dtype=torch.long)
         np.save(form_data_path + '/edge_index.npy', edge_index)
 
+    def load_path_adj_edgeindex(self, graph_output_folder):
+        form_data_path = './' + graph_output_folder + '/form_data'
+        kegg_path_gene_interaction_df = pd.read_csv('./' + graph_output_folder + '/merged-gene-edge-name-all.csv')
+        # FORM NOTATION TO [signaling pathways]
+        kegg_sp_list = list(set(kegg_path_gene_interaction_df['path']))
+        kegg_sp_list.sort()
+        kegg_sp_notation_list = ['sp' + str(x) for x in range(1, len(kegg_sp_list)+1)]
+        kegg_sp_map_df = pd.DataFrame({'SignalingPath': kegg_sp_list, 'SpNotation': kegg_sp_notation_list})
+        kegg_sp_map_df.to_csv('./' + graph_output_folder + '/kegg_sp_map.csv', index=False, header=True)
+        kegg_sp_map_dict = dict(zip(kegg_sp_list, kegg_sp_notation_list))
+        # REPLACE [gene_num, signalingpath] TO [gene_num, sp]
+        kegg_gene_num_dict_df = pd.read_csv('./' + graph_output_folder + '/map-all-gene.csv')
+        kegg_gene_num_dict = dict(zip(kegg_gene_num_dict_df.Gene_name, kegg_gene_num_dict_df.Gene_num))
+        kegg_path_gene_interaction_df = kegg_path_gene_interaction_df.replace({'src': kegg_gene_num_dict, 
+                                                                               'dest': kegg_gene_num_dict,
+                                                                               'path': kegg_sp_map_dict})
+        gene_num = kegg_gene_num_dict_df.shape[0]
+        for num_sp in kegg_sp_notation_list:
+            zero_adj = np.zeros((gene_num, gene_num))
+            sp_kegg_path_gene_df = kegg_path_gene_interaction_df.loc[kegg_path_gene_interaction_df['path'] == num_sp]
+            src_sp_gene_list = list(sp_kegg_path_gene_df['src'])
+            dest_sp_gene_list = list(sp_kegg_path_gene_df['dest'])
+            sp_gene_list = sorted(list(set(src_sp_gene_list + dest_sp_gene_list)))
+            sp_gene_idx_array = np.array([x-1 for x in sp_gene_list])
+            # GENE-GENE ADJACENT MATRIX
+            for i in range(len(src_sp_gene_list)):
+                row_idx = src_sp_gene_list[i] 
+                col_idx = dest_sp_gene_list[i]
+                zero_adj[row_idx, col_idx] = 1
+                zero_adj[col_idx, row_idx] = 1 # WHETHER WE WANT ['sym']
+            zero_adj[zero_adj > 1] = 1
+            sp_adj = zero_adj[sp_gene_idx_array][:, sp_gene_idx_array]
+            print(np.sum(sp_adj))
+            np.save(form_data_path + '/' + num_sp + '_adj.npy', sp_adj)
+            np.save(form_data_path + '/' + num_sp + '_gene_idx.npy', sp_gene_idx_array)
+            # import pdb; pdb.set_trace()
+    
+
+    def load_path_adj_khop_mask_edgeindex(self, khop_num, graph_output_folder):
+        form_data_path = './' + graph_output_folder + '/form_data'
+        kegg_path_gene_interaction_df = pd.read_csv('./' + graph_output_folder + '/merged-gene-edge-name-all.csv')
+        # FORM NOTATION TO [signaling pathways]
+        kegg_sp_list = list(set(kegg_path_gene_interaction_df['path']))
+        kegg_sp_list.sort()
+        kegg_sp_notation_list = ['sp' + str(x) for x in range(1, len(kegg_sp_list)+1)]
+        kegg_sp_map_df = pd.DataFrame({'SignalingPath': kegg_sp_list, 'SpNotation': kegg_sp_notation_list})
+        kegg_sp_map_df.to_csv('./' + graph_output_folder + '/kegg_sp_map.csv', index=False, header=True)
+        kegg_sp_map_dict = dict(zip(kegg_sp_list, kegg_sp_notation_list))
+        # REPLACE [gene_num, signalingpath] TO [gene_num, sp]
+        kegg_gene_num_dict_df = pd.read_csv('./' + graph_output_folder + '/map-all-gene.csv')
+        kegg_gene_num_dict = dict(zip(kegg_gene_num_dict_df.Gene_name, kegg_gene_num_dict_df.Gene_num))
+        kegg_path_gene_interaction_df = kegg_path_gene_interaction_df.replace({'src': kegg_gene_num_dict, 
+                                                                               'dest': kegg_gene_num_dict,
+                                                                               'path': kegg_sp_map_dict})
+        gene_num = kegg_gene_num_dict_df.shape[0]
+        for num_sp in kegg_sp_notation_list:
+            zero_adj = np.zeros((gene_num, gene_num))
+            sp_kegg_path_gene_df = kegg_path_gene_interaction_df.loc[kegg_path_gene_interaction_df['path'] == num_sp]
+            src_sp_gene_list = list(sp_kegg_path_gene_df['src'])
+            dest_sp_gene_list = list(sp_kegg_path_gene_df['dest'])
+            sp_gene_list = sorted(list(set(src_sp_gene_list + dest_sp_gene_list)))
+            sp_gene_idx_array = np.array([x-1 for x in sp_gene_list])
+            # MAP [sp_gene_list] TO [subgraph index / gene name]
+            khop_subidx = np.arange(sp_gene_idx_array.shape[0] * 3)
+            addone_sp_gene_idx_array = sp_gene_idx_array + 1
+            khop_sp_gene_idx_array = np.tile(addone_sp_gene_idx_array, 3)
+            sp_gene_map_df = pd.DataFrame({'Sub_idx': khop_subidx, 'Node_idx': khop_sp_gene_idx_array})
+            # import pdb; pdb.set_trace()
+            sp_gene_map_df = pd.merge(sp_gene_map_df, kegg_gene_num_dict_df, how='left', left_on='Node_idx', right_on='Gene_num')
+            sp_gene_map_df.to_csv(form_data_path + '/' + num_sp + '_gene_map.csv', index=False, header=True)
+            # GENE-GENE ADJACENT MATRIX
+            for i in range(len(src_sp_gene_list)):
+                row_idx = src_sp_gene_list[i]
+                col_idx = dest_sp_gene_list[i]
+                zero_adj[row_idx, col_idx] = 1
+                zero_adj[col_idx, row_idx] = 1 # WHETHER WE WANT ['sym']
+            zero_adj[zero_adj > 1] = 1
+            sp_adj = zero_adj[sp_gene_idx_array][:, sp_gene_idx_array]
+            print(np.sum(sp_adj))
+            # CALL [khop_mask_edgeindex()]
+            khop_pow_subadj_edgeindex, khop_mask_edgeindex = ROSMAP_LoadData().khop_mask_edgeindex(sp_adj, khop_num)
+            khop_pow_subadj_edgeindex = khop_pow_subadj_edgeindex.numpy()
+            khop_mask_edgeindex = khop_mask_edgeindex.numpy()
+            np.save(form_data_path + '/' + num_sp + '_khop_subadj_edgeindex.npy', khop_pow_subadj_edgeindex)
+            np.save(form_data_path + '/' + num_sp + '_khop_mask_edgeindex.npy', khop_mask_edgeindex)
+            np.save(form_data_path + '/' + num_sp + '_gene_idx.npy', sp_gene_idx_array)
+
+    def khop_sum_subadj(self, subadj, khop_num):
+        khop_sum_subadj = subadj.clone()
+        for i in range(2, khop_num + 1):
+            ith_pow_subadj = torch.matrix_power(subadj, i)
+            khop_sum_subadj += ith_pow_subadj
+        khop_sum_subadj[khop_sum_subadj > 0] = 1.0
+        khop_sum_subadj = khop_sum_subadj - torch.eye(subadj.shape[0])
+        khop_sum_subadj[khop_sum_subadj < 0] = 0.0
+        return khop_sum_subadj
+
+    def khop_mask_edgeindex(self, subadj, khop_num):
+        subadj = torch.from_numpy(subadj)
+        subadj_edgeindex = subadj.to_sparse()._indices()
+        ### FORM [khop] [korder edgeindex] & [mask]
+        # INITIAL [korder] MATRIX TO INCLUDE ALL EDGE FROM 1-HOP TO K-HOP
+        korder_pow_subadj = ROSMAP_LoadData().khop_sum_subadj(subadj, khop_num)
+        korder_pow_subadj_edgeindex = korder_pow_subadj.to_sparse()._indices()
+        ### FOR LOOP FOR [i-th hop] [korder edgeindex] & [mask]
+        # [mask]
+        mask_edgeindex = subadj[korder_pow_subadj_edgeindex[0,:], korder_pow_subadj_edgeindex[1,:]] # [1-hop mask]
+        khop_mask_edgeindex = mask_edgeindex
+        # [korder]
+        tmp_korder_pow_subadj_edgeindex = korder_pow_subadj_edgeindex
+        khop_pow_subadj_edgeindex = korder_pow_subadj_edgeindex
+        # [acc_pow]
+        acc_pow_subadj = torch.matrix_power(subadj, 1)
+        for i in range(2, khop_num + 1):
+            # CALCULATE THE [i-th hop] ADJACENT MATRIX
+            tmp_pow_subadj = torch.matrix_power(subadj, i)
+            tmp_pow_subadj[tmp_pow_subadj > 0] = 1.0
+            tmp_pow_subadj = tmp_pow_subadj - acc_pow_subadj - torch.eye(subadj.shape[0])
+            tmp_pow_subadj[tmp_pow_subadj < 0] = 0.0
+            acc_pow_subadj += tmp_pow_subadj
+            # CALCULATE THE [i-th hop] MASK INDEX
+            tmp_mask_edgeindex = tmp_pow_subadj[korder_pow_subadj_edgeindex[0,:], korder_pow_subadj_edgeindex[1,:]] # [i-th hop mask]
+            khop_mask_edgeindex = torch.cat([khop_mask_edgeindex, tmp_mask_edgeindex])
+            # COMBINE EACH HOP [edge_index]
+            tmp_korder_pow_subadj_edgeindex = tmp_korder_pow_subadj_edgeindex + subadj.shape[0]
+            khop_pow_subadj_edgeindex = torch.cat([khop_pow_subadj_edgeindex, tmp_korder_pow_subadj_edgeindex], dim=1)
+        return khop_pow_subadj_edgeindex, khop_mask_edgeindex
+
 
 if __name__ == "__main__":
     # Create the parser
     parser = argparse.ArgumentParser(description="ARUUMENTS FOR LOADING DATA")
     # Add arguments
     parser.add_argument('--dataset', dest = 'dataset', type=str, 
-                        default='UCSC', 
+                        default='ROSMAP', 
                         # default='ROSMAP', 
                         help='Dataset Selection')
     # Parse the arguments
@@ -424,6 +552,8 @@ if __name__ == "__main__":
         UCSC_LoadData().load_adj_edgeindex(graph_output_folder)
     elif dataset == 'ROSMAP':
         ROSMAP_LoadData().load_adj_edgeindex(graph_output_folder)
+        ROSMAP_LoadData().load_path_adj_edgeindex(graph_output_folder)
+        ROSMAP_LoadData().load_path_adj_khop_mask_edgeindex(khop_num=3, graph_output_folder=graph_output_folder)
 
     ################ MOUDLE 3 ###############
     # FORM N-TH FOLD TRAINING DATASET
@@ -452,3 +582,4 @@ if __name__ == "__main__":
             # To see the results
             for number, count in zip(unique_numbers, occurrences):
                 print(f"Number {number} occurs {count} times")
+    
